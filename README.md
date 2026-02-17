@@ -1,4 +1,10 @@
 # Local Code Indexing for Cursor
+It is fork of [https://github.com/LuotoCompany/cursor-local-indexing]. 
+Changes compared to original:
+* Uses ollama bge-m3 for embedings 
+* Optimized observers performance
+* Various bug fixes
+
 
 An experimental Python-based server that **locally** indexes codebases using ChromaDB and provides a semantic search tool via an MCP (Model Context Protocol) server for tools like Cursor.
 
