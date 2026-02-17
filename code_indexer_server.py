@@ -3,7 +3,10 @@
 import os
 import logging
 import json
+import traceback
 from typing import List, Set
+from pydantic.v1.networks import host_regex
+from typing_extensions import Annotated
 import chromadb
 from chromadb.config import Settings
 from chromadb.utils import embedding_functions
@@ -33,6 +36,11 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Reduce noise from HTTP / client libraries if they are chatty
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("chromadb").setLevel(logging.WARNING)
 
 # Default directories to ignore
 DEFAULT_IGNORE_DIRS = {
@@ -86,7 +94,7 @@ DEFAULT_FILE_EXTENSIONS = {
 config = None
 chroma_client = None
 embedding_function = None
-mcp = FastMCP(title="Code Indexer Server")
+mcp = FastMCP(name="Code Indexer Server")
 observers = []
 
 
@@ -233,13 +241,19 @@ async def initialize_chromadb():
         )
         logger.info("ChromaDB client initialized")
 
-        # Initialize embedding function
-        embedding_function = (
-            embedding_functions.SentenceTransformerEmbeddingFunction(
-                model_name="all-MiniLM-L6-v2"
-            )
+        # Initialize embedding function using Ollama with the bge-m3 model
+        ollama_base_url = os.getenv(
+            "OLLAMA_BASE_URL",
+            "http://host.docker.internal:11434"
         )
-        logger.info("Embedding function initialized")
+        embedding_function = embedding_functions.OllamaEmbeddingFunction(
+            model_name="bge-m3",
+            url=ollama_base_url,
+        )
+        logger.info(
+            f"Embedding function initialized with Ollama model 'bge-m3' "
+            f"at {ollama_base_url}"
+        )
 
         return True
     except Exception as e:
@@ -257,10 +271,13 @@ async def initialize_chromadb():
                 )
         if embedding_function is None:
             try:
-                embedding_function = (
-                    embedding_functions.SentenceTransformerEmbeddingFunction(
-                        model_name="all-MiniLM-L6-v2"
-                    )
+                ollama_base_url = os.getenv(
+                    "OLLAMA_BASE_URL",
+                    "http://host.docker.internal:11434"
+                )
+                embedding_function = embedding_functions.OllamaEmbeddingFunction(
+                    model_name="bge-m3",
+                    base_url=ollama_base_url,
                 )
             except Exception as embed_err:
                 logger.error(
@@ -378,7 +395,9 @@ def process_and_index_documents(
 
     # Process each document
     total_nodes = 0
-    for doc in documents:
+    total_documents = len(documents)
+
+    for doc_index, doc in enumerate(documents, start=1):
         try:
             # Extract file path from metadata
             file_path = doc.metadata.get("file_path", "unknown")
@@ -503,7 +522,8 @@ def process_and_index_documents(
                 logger.warning(f"No nodes generated for {file_path}")
                 continue
 
-            logger.info(f"Processing {file_path}: {len(nodes)} chunks")
+            # Detailed per-file processing log removed to reduce noise; progress is shown on stdout.'
+            # logger.info(f"Processing {file_path}: {len(nodes)} chunks")
 
             # Prepare data for ChromaDB
             ids = []
@@ -541,11 +561,19 @@ def process_and_index_documents(
 
             total_nodes += len(nodes)
 
+            # Progress output: "{progress}% / {total_documents}" on a single line
+            progress = int((doc_index / total_documents) * 100)
+            print(f"\r{progress}% / {total_documents}", end="", flush=True)
+
         except Exception as e:
             logger.error(
                 f"Error processing document "
                 f"{doc.metadata.get('file_path', 'unknown')}: {e}"
             )
+
+    # Ensure we end the progress line cleanly
+    if documents:
+        print()
 
     logger.info(
         f"Successfully indexed {total_nodes} code chunks "
@@ -598,7 +626,6 @@ async def perform_initial_indexing(folder: str) -> bool:
 async def index_projects():
     """Set up file system watchers for all configured projects."""
     global observers
-
     try:
         for folder in config["folders_to_index"]:
             # First perform initial indexing if needed
@@ -606,23 +633,13 @@ async def index_projects():
             if not success:
                 logger.error(f"Failed to perform initial indexing for {folder}")
                 continue
-
+            observer = Observer()
             folder_path = os.path.join(config["projects_root"], folder)
             logger.info(f"Setting up file watcher for {folder}")
-
+            observe_folder(observer, folder_path)
             # Create an observer and event handler for this folder
-            observer = Observer()
-            event_handler = CodeIndexerEventHandler(folder)
-            observer.schedule(event_handler, folder_path, recursive=True)
-
-            # Start the observer
-            observer.start()
             observers.append(observer)
-            logger.info(f"Started watching {folder}")
-
-        # Keep the main thread alive
-        while True:
-            await asyncio.sleep(1)
+            observer.start()
 
     except Exception as e:
         logger.error(f"Error in file watching setup: {e}")
@@ -634,22 +651,18 @@ async def index_projects():
 
 @mcp.tool(
     name="search_code",
-    description="""Search code using natural language queries.
-        Args:
-            query: Natural language query about the codebase
-            project: Collection/folder name to search in. Use the current workspace name.
-            n_results: Number of results to return (default: 5)
-            threshold: Minimum relevance percentage to include results 
-                (default: 30.0)
-    """
 )
 async def search_code(
-    query: str,
-    project: str,
-    n_results: int = 5,
-    threshold: float = 30.0
+    query:  Annotated[ str, "Natural-language question about the codebase to search for." ],
+    project: Annotated[ str, "Project or collection name to search in (typically the current workspace name, last folder name in the path)." ]    ,
+    n_results: Annotated[ int, "Maximum number of matching code snippets to return." ]=8,
+    threshold: Annotated[ float, "Minimum relevance score (0–100) a result must meet to be included in the response." ]=30.0,
 ) -> str:
+    """
+    Search the indexed codebase using a natural language query and return the most relevant code snippets."
+    """
     try:
+        logger.info(f"Running search_code with parameters: query={query}, project={project}, n_results={n_results}, threshold={threshold}");logger.info(f"Running search_code with parameters: query={query}, project={project}, n_results={n_results}, threshold={threshold}");
         if not chroma_client or not embedding_function:
             logger.error("ChromaDB client or embedding function not initialized")
             return json.dumps({
@@ -657,16 +670,16 @@ async def search_code(
                 "results": [],
                 "total_results": 0
             })
-
         # Get all collections
-        collection_names = chroma_client.list_collections()
-
+        collections = chroma_client.list_collections()
         # Find matching collections
         matching_collections = []
+
         project_name = project.lower()
-        for collection_name in collection_names:
+        for collection in collections:
             # The collection name might be in format "customerX_project1" or just "project1"
             # We want to match if project_name fully matches the part after the last _ (if any)
+            collection_name = collection.name;
             collection_parts = collection_name.lower().split('_')
             if collection_parts[-1] == project_name:
                 matching_collections.append(collection_name)
@@ -682,8 +695,8 @@ async def search_code(
         # Search in all matching collections and combine results
         all_results = []
 
-        for collection_name in matching_collections:
-            collection = chroma_client.get_collection(collection_name)
+        for collection in matching_collections:
+            collection = chroma_client.get_collection(collection)
 
             results = collection.query(
                 query_texts=[query],
@@ -720,8 +733,10 @@ async def search_code(
             "total_results": len(final_results)
         })
 
-    except Exception as e:
-        logger.error(f"Error in search_code: {str(e)}")
+    except Exception as e: 
+        logger.error(
+            f"Error in search_code: {str(e)}\n{traceback.format_exc()}"
+        )
         return json.dumps({
             "error": str(e),
             "results": [],
@@ -729,17 +744,59 @@ async def search_code(
         })
 
 
+def folder_contains_ignored_folders(folder_path: str) -> bool:
+    """Check if a folder contains any of the ignored folders."""
+    global config
+    ignore_dirs = set(config["ignore_dirs"])
+    for name in os.listdir(folder_path):
+        if not os.path.isdir(os.path.join(folder_path, name)):
+            continue
+        logger.info(f"Checking if {name} is in ignore_dirs: {name in ignore_dirs}")
+        if  name in ignore_dirs:
+            return True
+    return False
+
+def observe_folder(observer: Observer, folder_path: str):
+    """Observe a folder for changes."""
+    global config
+    ignore_dirs = set(config["ignore_dirs"])
+    if (folder_contains_ignored_folders(folder_path)):
+        for name in os.listdir(folder_path):
+            if name in ignore_dirs:
+                continue
+            if os.path.isdir(os.path.join(folder_path, name)):
+                observe_folder(observer, os.path.join(folder_path, name))
+            else:
+                observe_file(observer, os.path.join(folder_path, name))    
+    else:
+        event_handler = CodeIndexerEventHandler(folder_path)
+        observer.schedule(event_handler, folder_path, recursive=True)
+    
+    
+def observe_file(observer: Observer, file_path: str):
+    """Observe a file for changes."""
+    global config
+    ignore_dirs = set(config["ignore_dirs"])
+    ignore_files = set(config["ignore_files"])
+    file_extensions = set(config["file_extensions"])
+    if not is_valid_file(file_path, ignore_dirs, file_extensions, ignore_files):
+        return
+    event_handler = CodeIndexerEventHandler(file_path)
+    observer.schedule(event_handler, file_path, recursive=False)
+    logger.info(f"Started watching file {file_path}")
+
 # Run initialization before starting MCP
 async def main():
     # Initialize ChromaDB before starting MCP
     success = await initialize_chromadb()
 
     if success:
-        # Start file watching in background
+        # Start file watching in background (worker task)
         asyncio.create_task(index_projects())
         logger.info("File watching task started")
 
-    await mcp.run_sse_async()
+    await mcp.run_async(transport="http", host="0.0.0.0", port=8978)
+
 
 if __name__ == "__main__":
     asyncio.run(main())

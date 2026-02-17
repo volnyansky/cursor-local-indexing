@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "cursor-local-indexing"
+version = "0.1.0"
+description = "Local code indexing server for Cursor using ChromaDB and LlamaIndex"
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
+packages = [{ include = "code_indexer_server.py" }]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+chromadb = "1.4.1"
+fastmcp = "2.14.4"
+llama-index-core = "0.12.25"
+llama-index-readers-file = "0.4.6"
+tree-sitter-language-pack = "0.13.0"
+watchdog = "6.0.0"
+ollama = "^0.6.1"
+
+[tool.poetry.group.dev.dependencies]
+
+[tool.poetry.scripts]
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

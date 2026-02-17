@@ -26,13 +26,14 @@ An experimental Python-based server that **locally** indexes codebases using Chr
    PROJECTS_ROOT=~/projects
    FOLDERS_TO_INDEX=project1,project2
    ```
+4. Install Ollama, pull bge-m3 model
 
-4. Start the indexing server:
+5. Start the indexing server:
    ```bash
    docker-compose up -d
    ```
 
-5. Configure Cursor to use the local search server:
+6. Configure Cursor to use the local search server:
    Create or edit `~/.cursor/mcp.json`:
    ```json
    {
@@ -44,18 +45,16 @@ An experimental Python-based server that **locally** indexes codebases using Chr
    }
    ```
 
-6. Restart Cursor IDE to apply the changes.
+7. Restart Cursor IDE to apply the changes.
 
 The server will start indexing your specified projects, and you'll be able to use semantic code search within Cursor when those projects are active.
 
-7. Open a project that you configured as indexed.
+8. Open a project that you configured as indexed.
 
-Create a `.cursorrules` file and add the following:
-```
-<instructions>
-For any request, use the @search_code tool to check what the code does.
-Prefer that first before resorting to command line grepping etc.
-</instructions>
+add following into rules section of cursor settings
+[[calls]]
+match = "For any request which is related to the code base (finding implementation, understanding behavior, debugging, refactoring, or extending existing code). Use this tool *before* Grep, SemanticSearch, or reading specific files."
+tool = "search_code"
 ```
 
 8. Start using the Cursor Agent mode and see it doing local vector searches!
