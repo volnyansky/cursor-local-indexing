@@ -88,6 +88,7 @@ DEFAULT_FILE_EXTENSIONS = {
     ".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".c", ".cpp", ".h", ".hpp",
     ".cs", ".go", ".rb", ".php", ".swift", ".kt", ".rs", ".scala", ".sh",
     ".html", ".css", ".sql", ".md", ".json", ".yaml", ".yml", ".toml"
+    ".tf",".tpl",".tfvars"
 }
 
 # Global variables
