@@ -105,9 +105,9 @@ def sanitize_collection_name(folder_name: str) -> str:
 
 
 class CodeIndexerEventHandler(FileSystemEventHandler):
-    def __init__(self, folder_name: str):
+    def __init__(self, folder_name: str,collection_name: str):
         self.folder_name = folder_name
-        self.collection_name = sanitize_collection_name(folder_name)
+        self.collection_name = collection_name
         self.ignore_dirs = set(config["ignore_dirs"])
         self.ignore_files = set(config["ignore_files"])
         self.file_extensions = set(config["file_extensions"])
@@ -637,7 +637,8 @@ async def index_projects():
             observer = Observer()
             folder_path = os.path.join(config["projects_root"], folder)
             logger.info(f"Setting up file watcher for {folder}")
-            observe_folder(observer, folder_path)
+            collection_name = sanitize_collection_name(folder)
+            observe_folder(observer, folder_path, collection_name)
             # Create an observer and event handler for this folder
             observers.append(observer)
             observer.start()
@@ -752,12 +753,11 @@ def folder_contains_ignored_folders(folder_path: str) -> bool:
     for name in os.listdir(folder_path):
         if not os.path.isdir(os.path.join(folder_path, name)):
             continue
-        logger.info(f"Checking if {name} is in ignore_dirs: {name in ignore_dirs}")
         if  name in ignore_dirs:
             return True
     return False
 
-def observe_folder(observer: Observer, folder_path: str):
+def observe_folder(observer: Observer, folder_path: str, collection_name: str):
     """Observe a folder for changes."""
     global config
     ignore_dirs = set(config["ignore_dirs"])
@@ -766,15 +766,15 @@ def observe_folder(observer: Observer, folder_path: str):
             if name in ignore_dirs:
                 continue
             if os.path.isdir(os.path.join(folder_path, name)):
-                observe_folder(observer, os.path.join(folder_path, name))
+                observe_folder(observer, os.path.join(folder_path, name), collection_name)
             else:
-                observe_file(observer, os.path.join(folder_path, name))    
+                observe_file(observer, os.path.join(folder_path, name), collection_name)    
     else:
-        event_handler = CodeIndexerEventHandler(folder_path)
+        event_handler = CodeIndexerEventHandler(folder_path, collection_name)
         observer.schedule(event_handler, folder_path, recursive=True)
     
     
-def observe_file(observer: Observer, file_path: str):
+def observe_file(observer: Observer, file_path: str, collection_name: str):
     """Observe a file for changes."""
     global config
     ignore_dirs = set(config["ignore_dirs"])
@@ -782,7 +782,7 @@ def observe_file(observer: Observer, file_path: str):
     file_extensions = set(config["file_extensions"])
     if not is_valid_file(file_path, ignore_dirs, file_extensions, ignore_files):
         return
-    event_handler = CodeIndexerEventHandler(file_path)
+    event_handler = CodeIndexerEventHandler(file_path, collection_name)
     observer.schedule(event_handler, file_path, recursive=False)
     logger.info(f"Started watching file {file_path}")
 
