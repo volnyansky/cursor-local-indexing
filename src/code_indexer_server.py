@@ -13,6 +13,8 @@ from chromadb.utils import embedding_functions
 from tree_sitter_language_pack import get_parser
 import asyncio
 from fastmcp import FastMCP
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -97,6 +99,58 @@ chroma_client = None
 embedding_function = None
 mcp = FastMCP(name="Code Indexer Server")
 observers = []
+
+
+@mcp.custom_route("/rebuild/{project_name}", methods=["POST"])
+async def rebuild_index(request: Request) -> JSONResponse:
+    project_name = request.path_params["project_name"]
+
+    # Find folder matching project_name (same logic as search_code)
+    matching_folder = None
+    for folder in config["folders_to_index"]:
+        collection_name = sanitize_collection_name(folder)
+        if collection_name.lower().split("_")[-1] == project_name.lower():
+            matching_folder = folder
+            break
+
+    if not matching_folder:
+        return JSONResponse(
+            {"error": f"Project '{project_name}' not found in configured folders"},
+            status_code=404
+        )
+
+    collection_name = sanitize_collection_name(matching_folder)
+    folder_path = os.path.join(config["projects_root"], matching_folder)
+
+    def do_rebuild():
+        try:
+            chroma_client.delete_collection(collection_name)
+            logger.info(f"Deleted collection {collection_name} for rebuild")
+        except Exception:
+            pass  # Collection may not exist yet
+
+        documents = load_documents(
+            folder_path,
+            ignore_dirs=set(config["ignore_dirs"]),
+            file_extensions=set(config["file_extensions"]),
+            ignore_files=set(config["ignore_files"])
+        )
+
+        if not documents:
+            logger.warning(f"No indexable documents found in {folder_path}")
+            return
+
+        process_and_index_documents(documents, collection_name, "chroma_db")
+        logger.info(f"Rebuild complete for {project_name}: {len(documents)} files indexed")
+
+    asyncio.get_running_loop().run_in_executor(None, do_rebuild)
+
+    return JSONResponse({
+        "status": "rebuilding",
+        "project": project_name,
+        "collection": collection_name,
+        "folder": folder_path
+    })
 
 
 def sanitize_collection_name(folder_name: str) -> str:
