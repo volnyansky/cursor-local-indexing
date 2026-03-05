@@ -4,9 +4,12 @@ for Python files split by CodeSplitter (which does not populate
 start_line_number / end_line_number in node metadata).
 """
 
+import os
 import sys
 import unittest
 from unittest.mock import MagicMock, patch
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 # ---------------------------------------------------------------------------
 # Minimal stubs so we can import code_indexer_server without a running

@@ -22,7 +22,7 @@ RUN --mount=type=cache,target=/root/.cache/pypoetry,id=potery-${TARGETARCH} \
     poetry install --no-interaction --no-ansi --no-root
 
 # Copy the application code
-COPY code_indexer_server.py .
+COPY src/ ./src/
 
 # Create directory for ChromaDB
 RUN mkdir -p /app/chroma_db
@@ -31,4 +31,4 @@ RUN mkdir -p /app/chroma_db
 EXPOSE 8000
 
 # Command to run the application
-CMD ["python", "code_indexer_server.py"] 
+CMD ["python", "src/code_indexer_server.py"]
