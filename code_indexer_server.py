@@ -536,8 +536,12 @@ def process_and_index_documents(
                 end_line = node.metadata.get("end_line_number", 0)
 
                 if start_line == 0 or end_line == 0:
-                    start_line = 1
-                    end_line = len(node.text.split("\n"))
+                    if node.start_char_idx is not None and node.end_char_idx is not None:
+                        start_line = doc.text[:node.start_char_idx].count("\n") + 1
+                        end_line = doc.text[:node.end_char_idx].count("\n") + 1
+                    else:
+                        start_line = 1
+                        end_line = len(node.text.split("\n"))
 
                 chunk_id = f"{file_path}_{start_line}_{end_line}_{i}"
 
