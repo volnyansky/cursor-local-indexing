@@ -109,13 +109,13 @@ class TestPythonFileIndexing(unittest.TestCase):
             end = meta['end_line']
             self.assertGreaterEqual(start, 1, f"start_line < 1: {meta}")
             self.assertGreaterEqual(end, start, f"end_line < start_line: {meta}")
-            self.assertLessEqual(end, len(file_lines) + 1, f"end_line beyond EOF: {meta}")
+            self.assertLessEqual(end, len(file_lines), f"end_line beyond EOF: {meta}")
             region = ''.join(file_lines[start - 1:end])
             # Every non-empty line in the chunk must appear in the file region
             for line in doc.splitlines():
                 if line.strip():
                     self.assertIn(
-                        line.strip(), region,
+                        line, region,
                         f"Line {line!r} from chunk not found in file lines {start}-{end}",
                     )
 
