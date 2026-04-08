@@ -1,29 +1,22 @@
 #!/usr/bin/env python3
 
 import os
+import re
 import logging
 import json
 import traceback
 from typing import List, Set
-from pydantic.v1.networks import host_regex
-from typing_extensions import Annotated
 import chromadb
 from chromadb.config import Settings
 from chromadb.utils import embedding_functions
 from tree_sitter_language_pack import get_parser
-import asyncio
-from fastmcp import FastMCP
-from starlette.requests import Request
-from starlette.responses import JSONResponse
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
-
 
 # Import LlamaIndex components
 try:
     from llama_index.core import Document
     from llama_index.core.node_parser import CodeSplitter
     from llama_index.core import SimpleDirectoryReader
+    from llama_index.core.schema import TextNode
     print("LlamaIndex dependencies found.")
 except ImportError as e:
     print(f"Error: {e}")
@@ -90,156 +83,128 @@ DEFAULT_FILE_EXTENSIONS = {
     ".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".c", ".cpp", ".h", ".hpp",
     ".cs", ".go", ".rb", ".php", ".swift", ".kt", ".rs", ".scala", ".sh",
     ".html", ".css", ".sql", ".md", ".json", ".yaml", ".yml", ".toml"
-    ".tf",".tpl",".tfvars"
+    ".tf", ".tpl", ".tfvars"
 }
+
+# Single-line comment patterns: # (Python/shell), // (C-family/JS/TS/Go/etc.)
+_SINGLE_LINE_COMMENT_RE = re.compile(r'^\s*(#|//)')
+
+# Opening of a block comment (/** or /*) on its own line or starting a line
+_BLOCK_COMMENT_OPEN_RE = re.compile(r'^\s*/\*')
+
+# Closing of a block comment (*/)
+_BLOCK_COMMENT_CLOSE_RE = re.compile(r'\*/')
+
+# Function / class definition starters (covers Python, JS/TS, Go, Java, C#, etc.)
+_DEFINITION_START_RE = re.compile(
+    r'^\s*('
+    r'def |class |async def |async function |function |func |'
+    r'public |private |protected |static |abstract |override |'
+    r'(pub(\s+fn|\s+async\s+fn))|fn '   # Rust
+    r')'
+)
+
+
+def reattach_leading_comments(nodes):
+    """
+    Post-process CodeSplitter output so that comment lines trailing chunk N
+    are moved to the beginning of chunk N+1 when N+1 starts with a
+    function/class definition.
+
+    Handles both single-line (# / //) and block (/* ... */ / /** ... */)
+    comment styles. Blank lines between the comment and the definition are
+    included in the moved block so the pairing stays natural.
+
+    Mutates nodes in-place and returns them.
+    """
+    for i in range(len(nodes) - 1):
+        current = nodes[i]
+        nxt = nodes[i + 1]
+
+        lines = current.text.splitlines(keepends=True)
+        if not lines:
+            continue
+
+        # Find the first non-empty line of the next chunk
+        next_first_code = next(
+            (l for l in nxt.text.splitlines() if l.strip()), ""
+        )
+        if not _DEFINITION_START_RE.match(next_first_code):
+            continue
+
+        # Walk backwards through current chunk to find the start of the
+        # trailing comment block (single-line or block comment).
+        split_idx = len(lines)
+        j = len(lines) - 1
+
+        # Skip trailing blank lines first
+        while j >= 0 and not lines[j].strip():
+            j -= 1
+
+        if j < 0:
+            continue
+
+        # Collect backwards while we're inside comment lines
+        in_block_comment = False
+        while j >= 0:
+            line = lines[j]
+            stripped = line.strip()
+
+            if not stripped:
+                # blank line — stop; don't pull blank separator lines
+                break
+
+            if _BLOCK_COMMENT_CLOSE_RE.search(line):
+                # End of a block comment (reading backwards = we enter it)
+                in_block_comment = True
+                split_idx = j
+                j -= 1
+                continue
+
+            if in_block_comment:
+                split_idx = j
+                if _BLOCK_COMMENT_OPEN_RE.match(line):
+                    in_block_comment = False
+                j -= 1
+                continue
+
+            if _SINGLE_LINE_COMMENT_RE.match(line):
+                split_idx = j
+                j -= 1
+                continue
+
+            # Non-comment, non-blank line — stop
+            break
+
+        if split_idx == len(lines):
+            continue  # nothing to move
+
+        # Guard: don't leave current chunk empty
+        has_non_comment = any(
+            l.strip() and not _SINGLE_LINE_COMMENT_RE.match(l)
+            and not _BLOCK_COMMENT_OPEN_RE.match(l)
+            for l in lines[:split_idx]
+        )
+        if not has_non_comment:
+            continue
+
+        comment_block = "".join(lines[split_idx:])
+        current.text = "".join(lines[:split_idx])
+        nxt.text = comment_block + nxt.text
+
+        moved = len(comment_block)
+        if current.end_char_idx is not None:
+            current.end_char_idx -= moved
+        if nxt.start_char_idx is not None:
+            nxt.start_char_idx -= moved
+
+    return nodes
+
 
 # Global variables
 config = None
 chroma_client = None
 embedding_function = None
-mcp = FastMCP(name="Code Indexer Server")
-observers = []
-
-
-@mcp.custom_route("/rebuild/{project_name}", methods=["POST"])
-async def rebuild_index(request: Request) -> JSONResponse:
-    project_name = request.path_params["project_name"]
-
-    # Find folder matching project_name (same logic as search_code)
-    matching_folder = None
-    for folder in config["folders_to_index"]:
-        collection_name = sanitize_collection_name(folder)
-        if collection_name.lower().split("_")[-1] == project_name.lower():
-            matching_folder = folder
-            break
-
-    if not matching_folder:
-        return JSONResponse(
-            {"error": f"Project '{project_name}' not found in configured folders"},
-            status_code=404
-        )
-
-    collection_name = sanitize_collection_name(matching_folder)
-    folder_path = os.path.join(config["projects_root"], matching_folder)
-
-    def do_rebuild():
-        try:
-            chroma_client.delete_collection(collection_name)
-            logger.info(f"Deleted collection {collection_name} for rebuild")
-        except Exception:
-            pass  # Collection may not exist yet
-
-        documents = load_documents(
-            folder_path,
-            ignore_dirs=set(config["ignore_dirs"]),
-            file_extensions=set(config["file_extensions"]),
-            ignore_files=set(config["ignore_files"])
-        )
-
-        if not documents:
-            logger.warning(f"No indexable documents found in {folder_path}")
-            return
-
-        process_and_index_documents(documents, collection_name, "chroma_db")
-        logger.info(f"Rebuild complete for {project_name}: {len(documents)} files indexed")
-
-    asyncio.get_running_loop().run_in_executor(None, do_rebuild)
-
-    return JSONResponse({
-        "status": "rebuilding",
-        "project": project_name,
-        "collection": collection_name,
-        "folder": folder_path
-    })
-
-
-def sanitize_collection_name(folder_name: str) -> str:
-    """Convert folder name to a valid collection name by replacing forward slashes with underscores."""
-    return folder_name.replace("/", "_")
-
-
-class CodeIndexerEventHandler(FileSystemEventHandler):
-    def __init__(self, folder_name: str,collection_name: str):
-        self.folder_name = folder_name
-        self.collection_name = collection_name
-        self.ignore_dirs = set(config["ignore_dirs"])
-        self.ignore_files = set(config["ignore_files"])
-        self.file_extensions = set(config["file_extensions"])
-
-    def on_created(self, event):
-        if event.is_directory:
-            return
-        if is_valid_file(
-            event.src_path,
-            self.ignore_dirs,
-            self.file_extensions,
-            self.ignore_files
-        ):
-            self._handle_file_change(event.src_path)
-
-    def on_modified(self, event):
-        if event.is_directory:
-            return
-        if is_valid_file(
-            event.src_path,
-            self.ignore_dirs,
-            self.file_extensions,
-            self.ignore_files
-        ):
-            self._handle_file_change(event.src_path)
-
-    def on_deleted(self, event):
-        if event.is_directory:
-            return
-        if is_valid_file(
-            event.src_path,
-            self.ignore_dirs,
-            self.file_extensions,
-            self.ignore_files
-        ):
-            self._handle_file_deletion(event.src_path)
-
-    def _handle_file_change(self, file_path: str):
-        try:
-            # Calculate relative path
-            rel_path = os.path.relpath(file_path, config["projects_root"])
-
-            # Load and process the single file
-            reader = SimpleDirectoryReader(input_files=[file_path])
-            documents = reader.load_data()
-
-            if documents:
-                # Update metadata with relative path
-                documents[0].metadata["file_path"] = rel_path
-
-                # Process and index the document
-                process_and_index_documents(
-                    documents,
-                    self.collection_name,
-                    "chroma_db"
-                )
-                logger.info(f"Indexed updated file: {rel_path}")
-        except Exception as e:
-            logger.error(f"Error processing file {file_path}: {e}")
-
-    def _handle_file_deletion(self, file_path: str):
-        try:
-            # Calculate relative path
-            rel_path = os.path.relpath(file_path, config["projects_root"])
-
-            # Get the collection
-            collection = chroma_client.get_collection(
-                name=self.collection_name,
-                embedding_function=embedding_function
-            )
-
-            # Delete all chunks from this file
-            collection.delete(
-                where={"file_path": rel_path}
-            )
-            logger.info(f"Removed indexed chunks for deleted file: {rel_path}")
-        except Exception as e:
-            logger.error(f"Error removing chunks for {file_path}: {e}")
 
 
 def get_config_from_env():
@@ -342,6 +307,11 @@ async def initialize_chromadb():
         return False
 
 
+def sanitize_collection_name(folder_name: str) -> str:
+    """Convert folder name to a valid collection name by replacing forward slashes with underscores."""
+    return folder_name.replace("/", "_")
+
+
 def is_valid_file(
     file_path: str,
     ignore_dirs: Set[str],
@@ -377,7 +347,7 @@ def is_valid_file(
 
 
 def load_documents(
-    directory: str, 
+    directory: str,
     ignore_dirs: Set[str] = DEFAULT_IGNORE_DIRS,
     file_extensions: Set[str] = DEFAULT_FILE_EXTENSIONS,
     ignore_files: Set[str] = None
@@ -464,8 +434,8 @@ def process_and_index_documents(
 
             # Handle Markdown and other text files differently
             code_file_extensions = [
-                "py", "python", "js", "jsx", "ts", "tsx", "java", "c", 
-                "cpp", "h", "hpp", "cs", "go", "rb", "php", "swift", 
+                "py", "python", "js", "jsx", "ts", "tsx", "java", "c",
+                "cpp", "h", "hpp", "cs", "go", "rb", "php", "swift",
                 "kt", "rs", "scala"
             ]
 
@@ -508,6 +478,7 @@ def process_and_index_documents(
                         parser=code_parser
                     )
                     nodes = splitter.get_nodes_from_documents([doc])
+                    reattach_leading_comments(nodes)
                 except Exception as e:
                     logger.warning(
                         f"Could not create parser for {parser_language}, "
@@ -531,7 +502,6 @@ def process_and_index_documents(
                         if not chunk_text.strip():
                             continue
 
-                        from llama_index.core.schema import TextNode
                         node = TextNode(
                             text=chunk_text,
                             metadata={
@@ -561,7 +531,6 @@ def process_and_index_documents(
                     if not chunk_text.strip():
                         continue
 
-                    from llama_index.core.schema import TextNode
                     node = TextNode(
                         text=chunk_text,
                         metadata={
@@ -576,9 +545,6 @@ def process_and_index_documents(
             if not nodes:
                 logger.warning(f"No nodes generated for {file_path}")
                 continue
-
-            # Detailed per-file processing log removed to reduce noise; progress is shown on stdout.'
-            # logger.info(f"Processing {file_path}: {len(nodes)} chunks")
 
             # Prepare data for ChromaDB
             ids = []
@@ -680,182 +646,3 @@ async def perform_initial_indexing(folder: str) -> bool:
     except Exception as e:
         logger.error(f"Error during initial indexing of {folder}: {e}")
         return False
-
-
-async def index_projects():
-    """Set up file system watchers for all configured projects."""
-    global observers
-    try:
-        for folder in config["folders_to_index"]:
-            # First perform initial indexing if needed
-            success = await perform_initial_indexing(folder)
-            if not success:
-                logger.error(f"Failed to perform initial indexing for {folder}")
-                continue
-            observer = Observer()
-            folder_path = os.path.join(config["projects_root"], folder)
-            logger.info(f"Setting up file watcher for {folder}")
-            collection_name = sanitize_collection_name(folder)
-            observe_folder(observer, folder_path, collection_name)
-            # Create an observer and event handler for this folder
-            observers.append(observer)
-            observer.start()
-
-    except Exception as e:
-        logger.error(f"Error in file watching setup: {e}")
-        # Clean up observers on error
-        for observer in observers:
-            observer.stop()
-        observers.clear()
-
-
-@mcp.tool(
-    name="search_code",
-)
-async def search_code(
-    query:  Annotated[ str, "Natural-language question about the codebase to search for." ],
-    project: Annotated[ str, "Project or collection name to search in (typically the current workspace name, last folder name in the path)." ]    ,
-    n_results: Annotated[ int, "Maximum number of matching code snippets to return." ]=8,
-    threshold: Annotated[ float, "Minimum relevance score (0–100) a result must meet to be included in the response." ]=30.0,
-) -> str:
-    """
-    Search the indexed codebase using a natural language query and return the most relevant code snippets."
-    """
-    try:
-        logger.info(f"Running search_code with parameters: query={query}, project={project}, n_results={n_results}, threshold={threshold}");logger.info(f"Running search_code with parameters: query={query}, project={project}, n_results={n_results}, threshold={threshold}");
-        if not chroma_client or not embedding_function:
-            logger.error("ChromaDB client or embedding function not initialized")
-            return json.dumps({
-                "error": "Search system not properly initialized",
-                "results": [],
-                "total_results": 0
-            })
-        # Get all collections
-        collections = chroma_client.list_collections()
-        # Find matching collections
-        matching_collections = []
-
-        project_name = project.lower()
-        for collection in collections:
-            # The collection name might be in format "customerX_project1" or just "project1"
-            # We want to match if project_name fully matches the part after the last _ (if any)
-            collection_name = collection.name;
-            collection_parts = collection_name.lower().split('_')
-            if collection_parts[-1] == project_name:
-                matching_collections.append(collection_name)
-
-        if not matching_collections:
-            logger.error(f"No collections found matching project {project}")
-            return json.dumps({
-                "error": f"No collections found matching project {project}",
-                "results": [],
-                "total_results": 0
-            })
-
-        # Search in all matching collections and combine results
-        all_results = []
-
-        for collection in matching_collections:
-            collection = chroma_client.get_collection(collection)
-
-            results = collection.query(
-                query_texts=[query],
-                n_results=n_results,
-                include=["documents", "metadatas", "distances"]
-            )
-
-            if results["documents"] and results["documents"][0]:
-                for doc, meta, distance in zip(
-                    results["documents"][0],
-                    results["metadatas"][0],
-                    results["distances"][0]
-                ):
-                    similarity = (1 - distance) * 100
-                    if similarity >= threshold:
-                        all_results.append({
-                            "text": doc,
-                            "file_path": meta.get("file_path", "Unknown file"),
-                            "language": meta.get("language", "text"),
-                            "start_line": int(meta.get("start_line", 0)),
-                            "end_line": int(meta.get("end_line", 0)),
-                            "relevance": round(similarity, 1),
-                            "collection": collection.name  # Add collection name for debugging
-                        })
-
-        # Sort results by relevance
-        all_results.sort(key=lambda x: x["relevance"], reverse=True)
-
-        # Take top n_results
-        final_results = all_results[:n_results]
-
-        return json.dumps({
-            "results": final_results,
-            "total_results": len(final_results)
-        })
-
-    except Exception as e: 
-        logger.error(
-            f"Error in search_code: {str(e)}\n{traceback.format_exc()}"
-        )
-        return json.dumps({
-            "error": str(e),
-            "results": [],
-            "total_results": 0
-        })
-
-
-def folder_contains_ignored_folders(folder_path: str) -> bool:
-    """Check if a folder contains any of the ignored folders."""
-    global config
-    ignore_dirs = set(config["ignore_dirs"])
-    for name in os.listdir(folder_path):
-        if not os.path.isdir(os.path.join(folder_path, name)):
-            continue
-        if  name in ignore_dirs:
-            return True
-    return False
-
-def observe_folder(observer: Observer, folder_path: str, collection_name: str):
-    """Observe a folder for changes."""
-    global config
-    ignore_dirs = set(config["ignore_dirs"])
-    if (folder_contains_ignored_folders(folder_path)):
-        for name in os.listdir(folder_path):
-            if name in ignore_dirs:
-                continue
-            if os.path.isdir(os.path.join(folder_path, name)):
-                observe_folder(observer, os.path.join(folder_path, name), collection_name)
-            else:
-                observe_file(observer, os.path.join(folder_path, name), collection_name)    
-    else:
-        event_handler = CodeIndexerEventHandler(folder_path, collection_name)
-        observer.schedule(event_handler, folder_path, recursive=True)
-    
-    
-def observe_file(observer: Observer, file_path: str, collection_name: str):
-    """Observe a file for changes."""
-    global config
-    ignore_dirs = set(config["ignore_dirs"])
-    ignore_files = set(config["ignore_files"])
-    file_extensions = set(config["file_extensions"])
-    if not is_valid_file(file_path, ignore_dirs, file_extensions, ignore_files):
-        return
-    event_handler = CodeIndexerEventHandler(file_path, collection_name)
-    observer.schedule(event_handler, file_path, recursive=False)
-    logger.info(f"Started watching file {file_path}")
-
-# Run initialization before starting MCP
-async def main():
-    # Initialize ChromaDB before starting MCP
-    success = await initialize_chromadb()
-
-    if success:
-        # Start file watching in background (worker task)
-        asyncio.create_task(index_projects())
-        logger.info("File watching task started")
-
-    await mcp.run_async(transport="http", host="0.0.0.0", port=8978)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

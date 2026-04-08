@@ -31,4 +31,4 @@ RUN mkdir -p /app/chroma_db
 EXPOSE 8000
 
 # Command to run the application
-CMD ["python", "src/code_indexer_server.py"]
+CMD ["python", "src/main.py"]
