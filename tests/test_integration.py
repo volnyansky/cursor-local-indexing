@@ -61,5 +61,64 @@ def _get_all_chunks(collection_name: str):
     return result['documents'], result['metadatas']
 
 
+class TestPythonFileIndexing(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp_dir = tempfile.mkdtemp(prefix='chroma_test_py_')
+        _setup_indexer(cls.tmp_dir)
+        _index_file(PYTHON_CONTENT, 'test_py')
+        cls.docs, cls.metas = _get_all_chunks('test_py')
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp_dir, ignore_errors=True)
+
+    def _chunks_containing(self, text: str):
+        return [d for d in self.docs if text in d]
+
+    def test_all_functions_indexed(self):
+        for fn in ('add_numbers', 'is_palindrome', 'find_max', 'celsius_to_fahrenheit'):
+            self.assertTrue(
+                self._chunks_containing(f'def {fn}'),
+                f"No chunk found containing 'def {fn}'",
+            )
+
+    def test_each_function_chunk_contains_its_comment(self):
+        cases = [
+            ('def add_numbers', '# Function 1:'),
+            ('def is_palindrome', '# Function 2:'),
+            ('def find_max', '# Function 3:'),
+            ('def celsius_to_fahrenheit', '# Function 4:'),
+        ]
+        for func_sig, comment_prefix in cases:
+            matching = [d for d in self.docs if func_sig in d]
+            self.assertTrue(matching, f"No chunk for {func_sig!r}")
+            chunk = matching[0]
+            self.assertIn(
+                comment_prefix, chunk,
+                f"Comment {comment_prefix!r} not in chunk containing {func_sig!r}:\n{chunk}",
+            )
+
+    def test_line_numbers_accurate(self):
+        with open(PYTHON_CONTENT, 'r') as f:
+            file_lines = f.readlines()
+
+        for doc, meta in zip(self.docs, self.metas):
+            start = meta['start_line']
+            end = meta['end_line']
+            self.assertGreaterEqual(start, 1, f"start_line < 1: {meta}")
+            self.assertGreaterEqual(end, start, f"end_line < start_line: {meta}")
+            self.assertLessEqual(end, len(file_lines) + 1, f"end_line beyond EOF: {meta}")
+            region = ''.join(file_lines[start - 1:end])
+            # Every non-empty line in the chunk must appear in the file region
+            for line in doc.splitlines():
+                if line.strip():
+                    self.assertIn(
+                        line.strip(), region,
+                        f"Line {line!r} from chunk not found in file lines {start}-{end}",
+                    )
+
+
 if __name__ == '__main__':
     unittest.main()
