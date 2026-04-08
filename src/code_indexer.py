@@ -261,17 +261,17 @@ async def initialize_chromadb():
         )
         logger.info("ChromaDB client initialized")
 
-        # Initialize embedding function using Ollama with the bge-m3 model
+        # Initialize embedding function using Ollama with the qwen3-embedding model
         ollama_base_url = os.getenv(
             "OLLAMA_BASE_URL",
-            "http://host.docker.internal:11434"
+            "http://localhost:11434"
         )
         embedding_function = embedding_functions.OllamaEmbeddingFunction(
-            model_name="bge-m3",
+            model_name="qwen3-embedding:0.6b",
             url=ollama_base_url,
         )
         logger.info(
-            f"Embedding function initialized with Ollama model 'bge-m3' "
+            f"Embedding function initialized with Ollama model 'qwen3-embedding:4b' "
             f"at {ollama_base_url}"
         )
 
@@ -293,10 +293,10 @@ async def initialize_chromadb():
             try:
                 ollama_base_url = os.getenv(
                     "OLLAMA_BASE_URL",
-                    "http://host.docker.internal:11434"
+                    "http://localhost:11434"
                 )
                 embedding_function = embedding_functions.OllamaEmbeddingFunction(
-                    model_name="bge-m3",
+                    model_name="qwen3-embedding:0.6b",
                     base_url=ollama_base_url,
                 )
             except Exception as embed_err:
@@ -424,6 +424,7 @@ def process_and_index_documents(
 
     for doc_index, doc in enumerate(documents, start=1):
         try:
+            print(f"\rProcessing {doc.metadata.get('file_path', 'unknown')}... ", end="", flush=True)
             # Extract file path from metadata
             file_path = doc.metadata.get("file_path", "unknown")
             file_name = os.path.basename(file_path)
@@ -444,8 +445,10 @@ def process_and_index_documents(
                 parser_language = "python"  # Default fallback
                 if language in ["py", "python"]:
                     parser_language = "python"
-                elif language in ["js", "jsx", "ts", "tsx"]:
+                elif language in ["js", "jsx"]:
                     parser_language = "javascript"
+                elif language in [ "ts", "tsx"]:
+                    parser_language = "typescript"
                 elif language in ["java"]:
                     parser_language = "java"
                 elif language in ["c", "cpp", "h", "hpp"]:
@@ -577,6 +580,10 @@ def process_and_index_documents(
                 texts.append(node.text)
                 metadatas.append(metadata)
 
+            total_nodes += len(nodes)
+            # Progress output: "{progress}% / {total_documents}" on a single line
+            progress = int((doc_index / total_documents) * 100)
+            print(f"\r{progress}% / {total_documents} : {file_path}", end="", flush=True)
             # Add nodes to ChromaDB collection
             collection.upsert(
                 ids=ids,
@@ -584,11 +591,8 @@ def process_and_index_documents(
                 metadatas=metadatas
             )
 
-            total_nodes += len(nodes)
 
-            # Progress output: "{progress}% / {total_documents}" on a single line
-            progress = int((doc_index / total_documents) * 100)
-            print(f"\r{progress}% / {total_documents}", end="", flush=True)
+           
 
         except Exception as e:
             logger.error(

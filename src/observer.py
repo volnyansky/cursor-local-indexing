@@ -6,7 +6,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from llama_index.core import SimpleDirectoryReader
 
-import code_indexer
+from src import code_indexer
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +133,7 @@ def observe_file(observer: Observer, file_path: str, collection_name: str):
         return
     event_handler = CodeIndexerEventHandler(file_path, collection_name)
     observer.schedule(event_handler, file_path, recursive=False)
-    logger.info(f"Started watching file {file_path}")
+    #logger.info(f"Started watching file {file_path}")
 
 
 async def index_projects():

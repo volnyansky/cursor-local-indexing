@@ -13,4 +13,5 @@ services:
       - FOLDERS_TO_INDEX=${FOLDERS_TO_INDEX}  # Use env variable for folders
       - ADDITIONAL_IGNORE_DIRS=${ADDITIONAL_IGNORE_DIRS}
       - ADDITIONAL_IGNORE_FILES=${ADDITIONAL_IGNORE_FILES}
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
     restart: unless-stopped 

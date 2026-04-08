@@ -9,7 +9,7 @@ from fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-import code_indexer
+import src.code_indexer as code_indexer
 
 logger = logging.getLogger(__name__)
 

@@ -3,9 +3,9 @@
 import asyncio
 import logging
 
-from code_indexer import initialize_chromadb
-from observer import index_projects
-from mcp import mcp
+from src.code_indexer import initialize_chromadb
+from src.observer import index_projects
+from src.mcp import mcp
 
 logger = logging.getLogger(__name__)
 

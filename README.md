@@ -1,7 +1,7 @@
 # Local Code Indexing for Cursor
 It is fork of [https://github.com/LuotoCompany/cursor-local-indexing]. 
 Changes compared to original:
-* Uses ollama bge-m3 for embedings 
+* Uses ollama qwen3-embedding:0.6b for embeddings 
 * Optimized observers performance
 * Various bug fixes
 
@@ -32,7 +32,10 @@ An experimental Python-based server that **locally** indexes codebases using Chr
    PROJECTS_ROOT=~/projects
    FOLDERS_TO_INDEX=project1,project2
    ```
-4. Install Ollama, pull bge-m3 model
+4. Install Ollama, pull qwen3-embedding model:
+   ```bash
+   ollama pull qwen3-embedding:0.6b
+   ```
 
 5. Start the indexing server:
    ```bash
