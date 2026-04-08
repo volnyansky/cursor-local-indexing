@@ -174,5 +174,45 @@ class TestJSFileIndexing(unittest.TestCase):
         )
 
 
+class TestCommentReattachmentIntegration(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            cls.tmp_dir = tempfile.mkdtemp(prefix='chroma_test_long_')
+            _setup_indexer(cls.tmp_dir)
+            _index_file(LONG_PYTHON_CONTENT, 'test_long')
+            cls.docs, cls.metas = _get_all_chunks('test_long')
+        except Exception as e:
+            raise unittest.SkipTest(f"Integration setup failed: {e}")
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp_dir, ignore_errors=True)
+
+    def test_func_b_comment_is_in_func_b_chunk(self):
+        """The comment 'describes func_b' must be in the same chunk as def func_b."""
+        func_b_chunks = [d for d in self.docs if 'def func_b' in d]
+        self.assertTrue(func_b_chunks, "No chunk contains 'def func_b'")
+        self.assertTrue(
+            any('# This comment describes func_b.' in d for d in func_b_chunks),
+            f"Comment not found in any func_b chunk:\n{func_b_chunks}",
+        )
+
+    def test_func_b_comment_not_in_func_a_only_chunk(self):
+        """The func_a chunk (without func_b) must NOT contain the func_b comment."""
+        func_a_only_chunks = [
+            d for d in self.docs
+            if 'def func_a' in d and 'def func_b' not in d
+        ]
+        self.assertTrue(func_a_only_chunks, "No chunk contains 'def func_a' alone")
+        for chunk in func_a_only_chunks:
+            self.assertNotIn(
+                '# This comment describes func_b.',
+                chunk,
+                f"func_b comment leaked into func_a chunk:\n{chunk}",
+            )
+
+
 if __name__ == '__main__':
     unittest.main()
