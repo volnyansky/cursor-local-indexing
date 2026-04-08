@@ -129,5 +129,50 @@ class TestPythonFileIndexing(unittest.TestCase):
                     )
 
 
+class TestJSFileIndexing(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            cls.tmp_dir = tempfile.mkdtemp(prefix='chroma_test_js_')
+            _setup_indexer(cls.tmp_dir)
+            _index_file(JS_CONTENT, 'test_js')
+            cls.docs, cls.metas = _get_all_chunks('test_js')
+        except Exception as e:
+            raise unittest.SkipTest(f"Integration setup failed: {e}")
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp_dir, ignore_errors=True)
+
+    def _chunks_containing(self, text: str):
+        return [d for d in self.docs if text in d]
+
+    def test_all_functions_indexed(self):
+        for symbol in ('testFunc', 'testMyClass', 'MyClass'):
+            self.assertTrue(
+                self._chunks_containing(symbol),
+                f"No chunk found containing '{symbol}'",
+            )
+
+    def test_jsdoc_with_named_function(self):
+        """function testFunc() must be in the same chunk as its JSDoc."""
+        matching = self._chunks_containing('function testFunc()')
+        self.assertTrue(matching, "No chunk for 'function testFunc()'")
+        self.assertTrue(
+            any('/**' in d for d in matching),
+            f"JSDoc '/**' not found in any chunk with testFunc:\n{matching}",
+        )
+
+    def test_jsdoc_with_class(self):
+        """class MyClass must be in the same chunk as its JSDoc."""
+        matching = self._chunks_containing('class MyClass')
+        self.assertTrue(matching, "No chunk for 'class MyClass'")
+        self.assertTrue(
+            any('/**' in d for d in matching),
+            f"JSDoc '/**' not found in any chunk with MyClass:\n{matching}",
+        )
+
+
 if __name__ == '__main__':
     unittest.main()
