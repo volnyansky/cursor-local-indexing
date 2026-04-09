@@ -30,7 +30,7 @@ def _setup_indexer(tmp_dir: str) -> None:
     from chromadb.utils import embedding_functions
     ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     indexer.embedding_function = embedding_functions.OllamaEmbeddingFunction(
-        model_name="qwen3-embedding:0.6b",
+        model_name = os.getenv("EMBEDDING_MODEL", "qwen3-embedding:0.6b"),
         url=ollama_base_url,
     )
     indexer.chroma_client = chromadb.PersistentClient(

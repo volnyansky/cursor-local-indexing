@@ -267,11 +267,11 @@ async def initialize_chromadb():
             "http://localhost:11434"
         )
         embedding_function = embedding_functions.OllamaEmbeddingFunction(
-            model_name="qwen3-embedding:0.6b",
+            model_name= os.getenv("EMBEDDING_MODEL", "qwen3-embedding:0.6b"),
             url=ollama_base_url,
         )
         logger.info(
-            f"Embedding function initialized with Ollama model 'qwen3-embedding:4b' "
+            f"Embedding function initialized with Ollama model {os.getenv("EMBEDDING_MODEL", "qwen3-embedding:0.6b")} "
             f"at {ollama_base_url}"
         )
 
