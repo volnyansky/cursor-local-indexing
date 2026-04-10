@@ -115,7 +115,7 @@ async def search_code(
         all_results = []
 
         for collection in matching_collections:
-            collection = code_indexer.chroma_client.get_collection(collection)
+            collection = code_indexer.chroma_client.get_collection(collection, embedding_function=code_indexer.embedding_function)
 
             results = collection.query(
                 query_texts=[query],
