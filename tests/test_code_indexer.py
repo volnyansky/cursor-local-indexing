@@ -23,6 +23,7 @@ CONTENT_DIR = os.path.join(os.path.dirname(__file__), 'content')
 PYTHON_CONTENT = os.path.join(CONTENT_DIR, 'test-content.py')
 JS_CONTENT = os.path.join(CONTENT_DIR, 'test-content.js')
 LONG_PYTHON_CONTENT = os.path.join(CONTENT_DIR, 'test-content-long.py')
+TSX_CONTENT = os.path.join(CONTENT_DIR, 'test-component.tsx')
 
 
 def _setup_indexer(tmp_dir: str) -> None:
@@ -171,6 +172,51 @@ class TestJSFileIndexing(unittest.TestCase):
         self.assertTrue(
             any('/**' in d for d in matching),
             f"JSDoc '/**' not found in any chunk with MyClass:\n{matching}",
+        )
+
+
+class TestTSXFileIndexing(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            cls.tmp_dir = tempfile.mkdtemp(prefix='chroma_test_tsx_')
+            _setup_indexer(cls.tmp_dir)
+            _index_file(TSX_CONTENT, 'test_tsx')
+            cls.docs, cls.metas = _get_all_chunks('test_tsx')
+        except Exception as e:
+            raise unittest.SkipTest(f"Integration setup failed: {e}")
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp_dir, ignore_errors=True)
+
+    def _chunks_containing(self, text: str):
+        return [d for d in self.docs if text in d]
+
+    def test_all_components_indexed(self):
+        for symbol in ('ButtonProps', 'Button', 'TestComponent'):
+            self.assertTrue(
+                self._chunks_containing(symbol),
+                f"No chunk found containing '{symbol}'",
+            )
+
+    def test_jsdoc_with_button_component(self):
+        """const Button must be in the same chunk as its JSDoc."""
+        matching = self._chunks_containing('const Button')
+        self.assertTrue(matching, "No chunk for 'const Button'")
+        self.assertTrue(
+            any('/**' in d for d in matching),
+            f"JSDoc '/**' not found in any chunk with Button:\n{matching}",
+        )
+
+    def test_jsdoc_with_test_component(self):
+        """const TestComponent must be in the same chunk as its JSDoc."""
+        matching = self._chunks_containing('const TestComponent')
+        self.assertTrue(matching, "No chunk for 'const TestComponent'")
+        self.assertTrue(
+            any('/**' in d for d in matching),
+            f"JSDoc '/**' not found in any chunk with TestComponent:\n{matching}",
         )
 
 

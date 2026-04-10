@@ -100,6 +100,8 @@ _DEFINITION_START_RE = re.compile(
     r'^\s*('
     r'def |class |async def |async function |function |func |'
     r'public |private |protected |static |abstract |override |'
+    r'export (default )?(function |class |const |let |var |async )|'
+    r'const |let |var |'
     r'(pub(\s+fn|\s+async\s+fn))|fn '   # Rust
     r')'
 )
@@ -544,6 +546,17 @@ def process_and_index_documents(
                         }
                     )
                     nodes.append(node)
+
+            # Filter out degenerate tiny chunks (e.g. lone brackets from tree-sitter)
+            MIN_CHUNK_CHARS = 20
+            def is_meaningful_chunk(node):
+                stripped = node.text.strip()
+                if len(stripped) < MIN_CHUNK_CHARS:
+                    return False
+                # Filter chunks that are mostly braces/whitespace
+                code_chars = stripped.translate(str.maketrans("", "", "{}()[];\n\r\t "))
+                return len(code_chars) >= MIN_CHUNK_CHARS
+            nodes = [n for n in nodes if is_meaningful_chunk(n)]
 
             if not nodes:
                 logger.warning(f"No nodes generated for {file_path}")
