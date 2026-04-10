@@ -571,7 +571,7 @@ def process_and_index_documents(
                 metadata = {
                     "file_path": file_path,
                     "file_name": file_name,
-                    "language": language,
+                    "language": parser_language,
                     "start_line": start_line,
                     "end_line": end_line,
                 }

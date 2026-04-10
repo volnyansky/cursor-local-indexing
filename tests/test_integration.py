@@ -174,6 +174,82 @@ class TestJSFileIndexing(unittest.TestCase):
         )
 
 
+class TestMetadataAccurate(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            cls.tmp_dir = tempfile.mkdtemp(prefix='chroma_test_meta_')
+            _setup_indexer(cls.tmp_dir)
+            _index_file(PYTHON_CONTENT, 'test_meta')
+            cls.docs, cls.metas = _get_all_chunks('test_meta')
+        except Exception as e:
+            raise unittest.SkipTest(f"Integration setup failed: {e}")
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp_dir, ignore_errors=True)
+
+    def test_metadata_keys_present(self):
+        """Every chunk must carry the full set of metadata keys."""
+        required_keys = {'file_path', 'file_name', 'language', 'start_line', 'end_line'}
+        for meta in self.metas:
+            self.assertEqual(
+                required_keys, set(meta.keys()),
+                f"Unexpected metadata keys: {meta}",
+            )
+
+    def test_file_path_and_name(self):
+        """file_path and file_name must match the indexed file."""
+        for meta in self.metas:
+            self.assertEqual(meta['file_name'], 'test-content.py')
+            self.assertEqual(meta['file_path'], 'test-content.py')
+
+    def test_language_detected(self):
+        """language must be 'python' for a .py file."""
+        for meta in self.metas:
+            self.assertEqual(meta['language'], 'python')
+
+    def test_line_range_types_and_ordering(self):
+        """start_line and end_line must be positive integers with start <= end."""
+        for meta in self.metas:
+            self.assertIsInstance(meta['start_line'], int)
+            self.assertIsInstance(meta['end_line'], int)
+            self.assertGreaterEqual(meta['start_line'], 1)
+            self.assertGreaterEqual(meta['end_line'], meta['start_line'])
+
+    def test_line_ranges_cover_file(self):
+        """The union of all chunk line ranges must cover every non-blank source line."""
+        with open(PYTHON_CONTENT, 'r') as f:
+            lines = f.readlines()
+        non_blank = {i + 1 for i, l in enumerate(lines) if l.strip()}
+        covered = set()
+        for meta in self.metas:
+            covered.update(range(meta['start_line'], meta['end_line'] + 1))
+        missing = non_blank - covered
+        self.assertFalse(
+            missing,
+            f"Source lines not covered by any chunk: {sorted(missing)}",
+        )
+
+    def test_query_returns_metadata(self):
+        """A semantic query must return results with complete metadata."""
+        col = indexer.chroma_client.get_collection(
+            name='test_meta',
+            embedding_function=indexer.embedding_function,
+        )
+        result = col.query(query_texts=["add two numbers"], n_results=1)
+        self.assertEqual(len(result['metadatas']), 1)
+        meta = result['metadatas'][0][0]
+        self.assertIn('file_path', meta)
+        self.assertIn('start_line', meta)
+        self.assertIn('end_line', meta)
+        self.assertIn('language', meta)
+        # The top result should reference the add_numbers function
+        doc = result['documents'][0][0]
+        self.assertIn('add_numbers', doc)
+
+
 class TestCommentReattachmentIntegration(unittest.TestCase):
 
     @classmethod
