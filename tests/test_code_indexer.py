@@ -130,6 +130,51 @@ class TestPythonFileIndexing(unittest.TestCase):
                     )
 
 
+class TestNoJunkChunks(unittest.TestCase):
+    """Ensure no chunk has stripped text shorter than 10 characters."""
+
+    MIN_TEXT_LENGTH = 10
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            cls.tmp_dir = tempfile.mkdtemp(prefix='chroma_test_junk_')
+            _setup_indexer(cls.tmp_dir)
+            _index_file(PYTHON_CONTENT, 'test_junk_py')
+            _index_file(JS_CONTENT, 'test_junk_js')
+            _index_file(TSX_CONTENT, 'test_junk_tsx')
+            _index_file(LONG_PYTHON_CONTENT, 'test_junk_long')
+            cls.py_docs, _ = _get_all_chunks('test_junk_py')
+            cls.js_docs, _ = _get_all_chunks('test_junk_js')
+            cls.tsx_docs, _ = _get_all_chunks('test_junk_tsx')
+            cls.long_docs, _ = _get_all_chunks('test_junk_long')
+        except Exception as e:
+            raise unittest.SkipTest(f"Integration setup failed: {e}")
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp_dir, ignore_errors=True)
+
+    def _assert_no_short_chunks(self, docs, label):
+        for i, doc in enumerate(docs):
+            self.assertGreaterEqual(
+                len(doc.strip()), self.MIN_TEXT_LENGTH,
+                f"[{label}] Chunk {i} is junk ({len(doc.strip())} chars): {doc!r}",
+            )
+
+    def test_python_no_junk_chunks(self):
+        self._assert_no_short_chunks(self.py_docs, 'Python')
+
+    def test_js_no_junk_chunks(self):
+        self._assert_no_short_chunks(self.js_docs, 'JS')
+
+    def test_tsx_no_junk_chunks(self):
+        self._assert_no_short_chunks(self.tsx_docs, 'TSX')
+
+    def test_long_python_no_junk_chunks(self):
+        self._assert_no_short_chunks(self.long_docs, 'LongPython')
+
+
 class TestJSFileIndexing(unittest.TestCase):
 
     @classmethod
