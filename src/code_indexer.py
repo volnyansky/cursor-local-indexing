@@ -426,7 +426,6 @@ def process_and_index_documents(
 
     for doc_index, doc in enumerate(documents, start=1):
         try:
-            print(f"\rProcessing {doc.metadata.get('file_path', 'unknown')}... ", end="", flush=True)
             # Extract file path from metadata
             file_path = doc.metadata.get("file_path", "unknown")
             file_name = os.path.basename(file_path)
@@ -594,15 +593,14 @@ def process_and_index_documents(
                 metadatas.append(metadata)
 
             total_nodes += len(nodes)
-            # Progress output: "{progress}% / {total_documents}" on a single line
-            progress = int((doc_index / total_documents) * 100)
-            print(f"\r{progress}% / {total_documents} : {file_path}", end="", flush=True)
             # Add nodes to ChromaDB collection
             collection.upsert(
                 ids=ids,
                 documents=texts,
                 metadatas=metadatas
             )
+            # Progress output after upsert completes so it stays visible
+            print(f"\r{doc_index} / {total_documents} : {file_path}", end="", flush=True)
 
 
            
